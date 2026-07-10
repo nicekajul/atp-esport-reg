@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-deep: #070f1f;
+  --bg-navy: #0d1b30;
+  --panel: #101f38;
+  --gold: #f4c430;
+  --gold-deep: #c99700;
+  --gold-soft: #ffe08a;
+  --text: #e8edf5;
+  --text-mut: #8ca0bd;
+  --gold-border: rgba(244, 196, 48, 0.35);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at center, var(--bg-navy) 0%, var(--bg-deep) 75%);
+  min-height: 100vh;
+}
+
+.bg-rays {
+  background-image: repeating-conic-gradient(
+    from 0deg at 50% 50%,
+    rgba(244, 196, 48, 0.06) 0deg,
+    rgba(244, 196, 48, 0) 6deg,
+    rgba(244, 196, 48, 0) 12deg
+  );
+}
