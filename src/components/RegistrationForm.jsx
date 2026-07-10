@@ -70,7 +70,7 @@ export default function RegistrationForm({ onSuccess }) {
             aria-invalid={Boolean(errors.name)}
             aria-describedby={errors.name ? 'name-error' : undefined}
             className="min-h-[44px] w-full rounded-lg border border-white/10 bg-[var(--bg-deep)] px-3.5 py-2.5 font-inter text-[var(--text)] placeholder:text-[var(--text-mut)]/60 focus:border-[var(--gold)] focus:outline-none focus:ring-2 focus:ring-[var(--gold)] focus:shadow-[0_0_12px_rgba(244,196,48,0.35)]"
-            placeholder="e.g. Jordan Rivera"
+            placeholder="e.g. Marco Medina"
           />
           {errors.name && (
             <p id="name-error" className="mt-1.5 text-sm text-red-400">
@@ -95,7 +95,7 @@ export default function RegistrationForm({ onSuccess }) {
             aria-invalid={Boolean(errors.ign)}
             aria-describedby={errors.ign ? 'ign-error' : undefined}
             className="min-h-[44px] w-full rounded-lg border border-white/10 bg-[var(--bg-deep)] px-3.5 py-2.5 font-inter text-[var(--text)] placeholder:text-[var(--text-mut)]/60 focus:border-[var(--gold)] focus:outline-none focus:ring-2 focus:ring-[var(--gold)] focus:shadow-[0_0_12px_rgba(244,196,48,0.35)]"
-            placeholder="e.g. ShadowRiven"
+            placeholder="e.g. Parak!"
           />
           {errors.ign && (
             <p id="ign-error" className="mt-1.5 text-sm text-red-400">
@@ -120,7 +120,7 @@ export default function RegistrationForm({ onSuccess }) {
             aria-invalid={Boolean(errors.department)}
             aria-describedby={errors.department ? 'department-error' : undefined}
             className="min-h-[44px] w-full rounded-lg border border-white/10 bg-[var(--bg-deep)] px-3.5 py-2.5 font-inter text-[var(--text)] placeholder:text-[var(--text-mut)]/60 focus:border-[var(--gold)] focus:outline-none focus:ring-2 focus:ring-[var(--gold)] focus:shadow-[0_0_12px_rgba(244,196,48,0.35)]"
-            placeholder="e.g. Engineering"
+            placeholder="e.g. Production"
           />
           {errors.department && (
             <p id="department-error" className="mt-1.5 text-sm text-red-400">
