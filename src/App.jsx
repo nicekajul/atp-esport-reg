@@ -3,6 +3,7 @@ import NavBar from './components/NavBar.jsx'
 import RegisterPage from './pages/RegisterPage.jsx'
 import DetailsPage from './pages/DetailsPage.jsx'
 import MechanicsPage from './pages/MechanicsPage.jsx'
+import BracketPage from './pages/BracketPage.jsx'
 
 export default function App() {
   return (
@@ -13,6 +14,7 @@ export default function App() {
           <Route path="/" element={<RegisterPage />} />
           <Route path="/details" element={<DetailsPage />} />
           <Route path="/mechanics" element={<MechanicsPage />} />
+          <Route path="/bracket" element={<BracketPage />} />
         </Routes>
       </main>
     </div>

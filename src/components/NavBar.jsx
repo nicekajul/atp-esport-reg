@@ -4,6 +4,7 @@ const links = [
   { to: '/', label: 'Register', end: true },
   { to: '/details', label: 'Tournament Details' },
   { to: '/mechanics', label: 'Match Mechanics' },
+  { to: '/bracket', label: 'Bracket' },
 ]
 
 export default function NavBar() {
