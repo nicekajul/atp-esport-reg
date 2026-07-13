@@ -178,7 +178,7 @@ export default function BracketPage() {
         setTeams(nextTeams)
       } catch (err) {
         if (err.name !== 'AbortError') {
-          setError('Unable to load teams from the Apps Script endpoint right now.')
+          setError('Unable to load teams. Registration is still open.')
         }
       } finally {
         setLoading(false)
