@@ -2,12 +2,38 @@ import { useEffect, useState } from 'react'
 import { SingleEliminationBracket, SVGViewer } from '@g-loot/react-tournament-brackets'
 import { InfoPage, Section, List } from '../components/InfoPage.jsx'
 
-function buildRoundRobinFixtures(teams) {
-  const participants = teams.map((team, index) => ({
+// Deterministic pseudo-random ordering so the Group A/B split stays stable across
+// reloads for the same set of teams, instead of reshuffling every page visit.
+function hashString(value) {
+  let hash = 0
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0
+  }
+  return hash
+}
+
+function normalizeTeams(teams) {
+  return teams.map((team, index) => ({
     id: team.id ?? `team-${index + 1}`,
     name: team.name || `Team ${index + 1}`,
     players: Array.isArray(team.players) ? team.players : [],
   }))
+}
+
+// Splits teams into two even groups (Group A / Group B) using a stable shuffle.
+function splitIntoGroups(teams) {
+  const normalized = normalizeTeams(teams)
+  const shuffled = [...normalized].sort((a, b) => hashString(a.id) - hashString(b.id))
+
+  const half = Math.ceil(shuffled.length / 2)
+  return {
+    groupA: shuffled.slice(0, half),
+    groupB: shuffled.slice(half),
+  }
+}
+
+function buildRoundRobinFixtures(teams, labelPrefix) {
+  const participants = [...teams]
 
   if (participants.length < 2) {
     return []
@@ -15,7 +41,7 @@ function buildRoundRobinFixtures(teams) {
 
   const roster = [...participants]
   if (roster.length % 2 !== 0) {
-    roster.push({ id: `bye-${roster.length + 1}`, name: 'Bye', players: [] })
+    roster.push({ id: `bye-${labelPrefix}-${roster.length + 1}`, name: 'Bye', players: [] })
   }
 
   const rounds = []
@@ -29,15 +55,15 @@ function buildRoundRobinFixtures(teams) {
       const away = rotation[rotation.length - 1 - i]
 
       matches.push({
-        id: `round-${roundIndex + 1}-match-${i + 1}`,
+        id: `${labelPrefix}-round-${roundIndex + 1}-match-${i + 1}`,
         home,
         away,
       })
     }
 
     rounds.push({
-      id: roundIndex + 1,
-      title: `Round ${roundIndex + 1}`,
+      id: `${labelPrefix}-${roundIndex + 1}`,
+      title: `${labelPrefix} — Round ${roundIndex + 1}`,
       matches,
     })
 
@@ -48,38 +74,47 @@ function buildRoundRobinFixtures(teams) {
   return rounds
 }
 
-function buildPlayoffMatches(teams) {
-  const playoffTeams = teams.slice(0, Math.min(teams.length, 8)).map((team, index) => ({
-    id: team.id ?? `team-${index + 1}`,
-    name: team.name || `Team ${index + 1}`,
-    players: Array.isArray(team.players) ? team.players : [],
-    isBye: false,
-  }))
+// Pads a group's qualifiers to exactly 4 slots with Byes so the crossover bracket
+// always has a fixed shape, even before real group-stage standings exist.
+function topFourWithByes(groupTeams, groupLabel) {
+  const qualifiers = groupTeams.slice(0, 4).map((team) => ({ ...team, isBye: false }))
 
-  while (playoffTeams.length % 2 !== 0) {
-    playoffTeams.push({
-      id: `bye-${playoffTeams.length + 1}`,
+  while (qualifiers.length < 4) {
+    qualifiers.push({
+      id: `bye-${groupLabel}-${qualifiers.length + 1}`,
       name: 'Bye',
       players: [],
       isBye: true,
     })
   }
 
-  if (playoffTeams.length < 2) {
-    return []
-  }
+  return qualifiers
+}
 
-  const totalRounds = Math.ceil(Math.log2(playoffTeams.length))
-  const matches = []
+// Standard World Cup-style crossover: 1st in a group faces 4th in the other, 2nd faces 3rd.
+function buildPlayoffMatches(groupA, groupB) {
+  const qualifiersA = topFourWithByes(groupA, 'A')
+  const qualifiersB = topFourWithByes(groupB, 'B')
+
+  const quarterfinalPairs = [
+    [qualifiersA[0], qualifiersB[3]],
+    [qualifiersA[1], qualifiersB[2]],
+    [qualifiersB[0], qualifiersA[3]],
+    [qualifiersB[1], qualifiersA[2]],
+  ]
+
+  const totalRounds = 3
   const roundLabels = ['Quarterfinals', 'Semifinals', 'Final']
+  const matches = []
 
   for (let roundIndex = 0; roundIndex < totalRounds; roundIndex += 1) {
-    const currentRoundSize = playoffTeams.length / 2 ** (roundIndex + 1)
-    const label = roundIndex < roundLabels.length ? roundLabels[roundIndex] : `Round ${roundIndex + 1}`
+    const currentRoundSize = 4 / 2 ** roundIndex
+    const label = roundLabels[roundIndex]
 
     for (let matchIndex = 0; matchIndex < currentRoundSize; matchIndex += 1) {
       const matchId = `playoff-${roundIndex + 1}-${matchIndex + 1}`
-      const nextMatchId = roundIndex + 1 < totalRounds ? `playoff-${roundIndex + 2}-${Math.floor(matchIndex / 2) + 1}` : null
+      const nextMatchId =
+        roundIndex + 1 < totalRounds ? `playoff-${roundIndex + 2}-${Math.floor(matchIndex / 2) + 1}` : null
 
       let participants = [
         { id: `tbd-${matchId}-top`, name: 'TBD', status: null },
@@ -87,8 +122,7 @@ function buildPlayoffMatches(teams) {
       ]
 
       if (roundIndex === 0) {
-        const topTeam = playoffTeams[matchIndex * 2]
-        const bottomTeam = playoffTeams[matchIndex * 2 + 1]
+        const [topTeam, bottomTeam] = quarterfinalPairs[matchIndex]
 
         participants = [
           {
@@ -151,6 +185,46 @@ function CustomMatch({ topParty, bottomParty }) {
   )
 }
 
+function GroupRoundRobin({ title, rounds }) {
+  return (
+    <div>
+      <h3 className="mb-3 font-oswald text-sm font-semibold uppercase tracking-wide text-[var(--gold-soft)]">
+        {title}
+      </h3>
+      {rounds.length === 0 ? (
+        <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-center font-inter text-sm text-[var(--text-mut)]">
+          Not enough teams yet.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {rounds.map((round) => (
+            <div key={round.id} className="rounded-xl border border-white/10 bg-black/20 p-4">
+              <h4 className="mb-2 font-oswald text-xs font-semibold uppercase tracking-wide text-[var(--text-mut)]">
+                {round.title}
+              </h4>
+              <ul className="space-y-2">
+                {round.matches.map((match) => (
+                  <li
+                    key={match.id}
+                    className="flex flex-wrap items-center gap-2 font-inter text-sm text-[var(--text)]"
+                  >
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] uppercase tracking-[0.2em] text-[var(--text-mut)]">
+                      Match
+                    </span>
+                    <span className="font-semibold text-white">{match.home.name}</span>
+                    <span className="text-[var(--text-mut)]">vs</span>
+                    <span className="font-semibold text-white">{match.away.name}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function BracketPage() {
   const [teams, setTeams] = useState([])
   const [loading, setLoading] = useState(true)
@@ -190,36 +264,38 @@ export default function BracketPage() {
     return () => controller.abort()
   }, [])
 
-  const roundRobinFixtures = buildRoundRobinFixtures(teams)
-  const playoffMatches = buildPlayoffMatches(teams)
+  const { groupA, groupB } = splitIntoGroups(teams)
+  const groupARounds = buildRoundRobinFixtures(groupA, 'Group A')
+  const groupBRounds = buildRoundRobinFixtures(groupB, 'Group B')
+  const playoffMatches = teams.length >= 2 ? buildPlayoffMatches(groupA, groupB) : []
 
   return (
     <InfoPage kicker="Esports League" title="Tournament Bracket">
       <Section title="🧠 Tournament Flow">
         <p>
-          The opening stage is a round-robin format so every team gets more time on the floor,
-          and only the later phase shifts into single-elimination playoffs.
+          Teams are split evenly into Group A and Group B for a round-robin stage, then the
+          top 4 from each group cross over into a single-elimination playoff bracket.
         </p>
         <List
           items={[
             <>
-              <strong className="text-[var(--gold-soft)]">Round-Robin:</strong> Teams play
-              multiple matches early in the tournament to build momentum and keep the experience
-              lively.
+              <strong className="text-[var(--gold-soft)]">Group Stage:</strong> Each team plays
+              every other team in its own group.
             </>,
             <>
-              <strong className="text-[var(--gold-soft)]">Playoffs:</strong> The strongest teams
-              advance into the single-elimination bracket for the decisive rounds.
+              <strong className="text-[var(--gold-soft)]">Crossover Playoffs:</strong> 1st place
+              in a group faces 4th place in the other group, and 2nd faces 3rd — the classic
+              World Cup-style bracket.
             </>,
             <>
-              <strong className="text-[var(--gold-soft)]">Byes:</strong> If the number of teams is
-              odd, the schedule automatically inserts a Bye slot.
+              <strong className="text-[var(--gold-soft)]">Byes:</strong> If a group has fewer
+              than 4 teams, the schedule automatically inserts Bye slots.
             </>,
           ]}
         />
       </Section>
 
-      <Section title="🏁 Round-Robin Stage">
+      <Section title="🏁 Group Stage">
         {loading ? (
           <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-center font-inter text-sm text-[var(--text-mut)]">
             Fetching generated teams...
@@ -228,31 +304,14 @@ export default function BracketPage() {
           <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-6 text-center font-inter text-sm text-red-200">
             {error}
           </div>
-        ) : roundRobinFixtures.length === 0 ? (
+        ) : teams.length === 0 ? (
           <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-center font-inter text-sm text-[var(--text-mut)]">
             No teams were returned by the Apps Script endpoint yet.
           </div>
         ) : (
-          <div className="space-y-4">
-            {roundRobinFixtures.map((round) => (
-              <div key={round.id} className="rounded-xl border border-white/10 bg-black/20 p-4">
-                <h3 className="mb-3 font-oswald text-sm font-semibold uppercase tracking-wide text-[var(--gold-soft)]">
-                  {round.title}
-                </h3>
-                <ul className="space-y-2">
-                  {round.matches.map((match) => (
-                    <li key={match.id} className="flex flex-wrap items-center gap-2 font-inter text-sm text-[var(--text)]">
-                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] uppercase tracking-[0.2em] text-[var(--text-mut)]">
-                        Match
-                      </span>
-                      <span className="font-semibold text-white">{match.home.name}</span>
-                      <span className="text-[var(--text-mut)]">vs</span>
-                      <span className="font-semibold text-white">{match.away.name}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <GroupRoundRobin title="Group A" rounds={groupARounds} />
+            <GroupRoundRobin title="Group B" rounds={groupBRounds} />
           </div>
         )}
       </Section>
@@ -271,17 +330,23 @@ export default function BracketPage() {
             There are not enough teams to build the playoff bracket yet.
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/20 p-4">
-            <SingleEliminationBracket
-              matches={playoffMatches}
-              matchComponent={CustomMatch}
-              svgWrapper={({ children, ...props }) => (
-                <SVGViewer width={980} height={620} {...props}>
-                  {children}
-                </SVGViewer>
-              )}
-            />
-          </div>
+          <>
+            <p className="mb-4 font-inter text-xs text-[var(--text-mut)]">
+              Seeded by current group order — this will reflect real standings once match
+              results are tracked.
+            </p>
+            <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/20 p-4">
+              <SingleEliminationBracket
+                matches={playoffMatches}
+                matchComponent={CustomMatch}
+                svgWrapper={({ children, ...props }) => (
+                  <SVGViewer width={980} height={620} {...props}>
+                    {children}
+                  </SVGViewer>
+                )}
+              />
+            </div>
+          </>
         )}
       </Section>
     </InfoPage>
