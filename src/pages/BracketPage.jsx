@@ -387,9 +387,25 @@ function GroupRoundRobin({ title, rounds }) {
                       </td>
                     )}
                     <td className="px-3 py-2 font-inter text-sm text-[var(--text)]">
-                      <span className="font-semibold text-white">{match.home.name}</span>
-                      <span className="mx-1.5 text-[var(--text-mut)]">vs</span>
-                      <span className="font-semibold text-white">{match.away.name}</span>
+                      <div className="flex flex-col gap-1 sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-x-1.5">
+                        <span>
+                          <span className="font-semibold text-white">{match.home.name}</span>
+                          {match.home.players.length > 0 && (
+                            <span className="ml-1.5 text-xs text-[var(--text-mut)]">
+                              ({match.home.players.join(', ')})
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[var(--text-mut)]">vs</span>
+                        <span>
+                          <span className="font-semibold text-white">{match.away.name}</span>
+                          {match.away.players.length > 0 && (
+                            <span className="ml-1.5 text-xs text-[var(--text-mut)]">
+                              ({match.away.players.join(', ')})
+                            </span>
+                          )}
+                        </span>
+                      </div>
                     </td>
                   </tr>
                 )),
