@@ -1,6 +1,8 @@
-export function InfoPage({ title, kicker, children }) {
+export function InfoPage({ title, kicker, children, maxWidthClass = 'max-w-[720px]' }) {
   return (
-    <div className="w-full max-w-[720px] rounded-2xl border border-[var(--gold-border)] bg-[var(--panel)] p-6 shadow-[0_0_50px_rgba(244,196,48,0.12),0_0_1px_rgba(244,196,48,0.4)] sm:p-8">
+    <div
+      className={`w-full ${maxWidthClass} rounded-2xl border border-[var(--gold-border)] bg-[var(--panel)] p-6 shadow-[0_0_50px_rgba(244,196,48,0.12),0_0_1px_rgba(244,196,48,0.4)] sm:p-8`}
+    >
       <header className="mb-6 text-center">
         {kicker && (
           <p className="font-oswald text-xs font-medium uppercase tracking-[0.3em] text-[var(--gold-soft)]/80">

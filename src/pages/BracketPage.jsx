@@ -1,45 +1,43 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SingleEliminationBracket, SVGViewer } from '@g-loot/react-tournament-brackets'
 import { InfoPage, Section, List } from '../components/InfoPage.jsx'
 
-// Deterministic pseudo-random ordering so the Group A/B split stays stable across
-// reloads for the same set of teams, instead of reshuffling every page visit.
-function hashString(value) {
-  let hash = 0
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) | 0
-  }
-  return hash
-}
+const BRACKET_MIN_WIDTH = 820
+const BRACKET_ASPECT_RATIO = 620 / 980
+
+// The library boxes each match in a fixed-size foreignObject (default 300x110) —
+// our two-team card needs more room than the default so full IGNs/rosters aren't
+// clipped, so these are passed explicitly via options.style below.
+const MATCH_BOX_WIDTH = 280
+const MATCH_BOX_HEIGHT = 130
 
 function normalizeTeams(teams) {
   return teams.map((team, index) => ({
     id: team.id ?? `team-${index + 1}`,
-    name: team.name || `Team ${index + 1}`,
+    // Sheet cells can hold a number (e.g. someone drag-filled 1, 2, 3... over the
+    // default "TBD" names) — always coerce to a string, since downstream code
+    // (localeCompare for standings sort, truncate/join for display) assumes text.
+    name: team.name != null && team.name !== '' ? String(team.name) : `Team ${index + 1}`,
+    group: team.group === 'A' || team.group === 'B' ? team.group : null,
     players: Array.isArray(team.players) ? team.players : [],
   }))
 }
 
-// Splits teams into two even groups (Group A / Group B) using a stable shuffle.
 function splitIntoGroups(teams) {
   const normalized = normalizeTeams(teams)
-  const shuffled = [...normalized].sort((a, b) => hashString(a.id) - hashString(b.id))
-
-  const half = Math.ceil(shuffled.length / 2)
   return {
-    groupA: shuffled.slice(0, half),
-    groupB: shuffled.slice(half),
+    groupA: normalized.filter((team) => team.group === 'A'),
+    groupB: normalized.filter((team) => team.group === 'B'),
   }
 }
 
+// Full round-robin fixture list (every possible pairing) for a group, grouped into
+// simultaneous "rounds" via the circle method — this is the complete matchup plan,
+// separate from the actual dated Match Schedule (which plays one match a week).
 function buildRoundRobinFixtures(teams, labelPrefix) {
-  const participants = [...teams]
+  if (teams.length < 2) return []
 
-  if (participants.length < 2) {
-    return []
-  }
-
-  const roster = [...participants]
+  const roster = [...teams]
   if (roster.length % 2 !== 0) {
     roster.push({ id: `bye-${labelPrefix}-${roster.length + 1}`, name: 'Bye', players: [] })
   }
@@ -63,7 +61,7 @@ function buildRoundRobinFixtures(teams, labelPrefix) {
 
     rounds.push({
       id: `${labelPrefix}-${roundIndex + 1}`,
-      title: `${labelPrefix} — Round ${roundIndex + 1}`,
+      roundNumber: roundIndex + 1,
       matches,
     })
 
@@ -74,41 +72,105 @@ function buildRoundRobinFixtures(teams, labelPrefix) {
   return rounds
 }
 
-// Pads a group's qualifiers to exactly 4 slots with Byes so the crossover bracket
-// always has a fixed shape, even before real group-stage standings exist.
-function topFourWithByes(groupTeams, groupLabel) {
-  const qualifiers = groupTeams.slice(0, 4).map((team) => ({ ...team, isBye: false }))
-
-  while (qualifiers.length < 4) {
-    qualifiers.push({
-      id: `bye-${groupLabel}-${qualifiers.length + 1}`,
-      name: 'Bye',
-      players: [],
-      isBye: true,
-    })
-  }
-
-  return qualifiers
+function emptyRecord(id, name) {
+  // name can arrive as a number from raw sheet data — sort/display below assume a string.
+  return { id, name: String(name ?? id), played: 0, wins: 0, losses: 0, scoreFor: 0, scoreAgainst: 0, points: 0 }
 }
 
-// Standard World Cup-style crossover: 1st in a group faces 4th in the other, 2nd faces 3rd.
-function buildPlayoffMatches(groupA, groupB) {
-  const qualifiersA = topFourWithByes(groupA, 'A')
-  const qualifiersB = topFourWithByes(groupB, 'B')
+// Standings from the schedule's recorded scores: win = 3 pts, tie-broken by wins
+// then score differential. A group's standings are "final" only once every one of
+// its scheduled matches has both scores filled in.
+//
+// Keyed by Team ID, not name — every team starts out named the same literal "TBD"
+// until an admin renames it, so keying by name would collapse multiple teams into
+// a single row (a later team's Map entry silently overwrites an earlier one).
+function computeStandings(groupTeams, groupMatches) {
+  const stats = new Map()
+  groupTeams.forEach((team) => stats.set(team.id, emptyRecord(team.id, team.name)))
 
-  const quarterfinalPairs = [
-    [qualifiersA[0], qualifiersB[3]],
-    [qualifiersA[1], qualifiersB[2]],
-    [qualifiersB[0], qualifiersA[3]],
-    [qualifiersB[1], qualifiersA[2]],
+  groupMatches.forEach((match) => {
+    if (match.scoreA == null || match.scoreB == null) return
+
+    const aId = match.teamAId ?? match.teamA
+    const bId = match.teamBId ?? match.teamB
+    const a = stats.get(aId) ?? emptyRecord(aId, match.teamA)
+    const b = stats.get(bId) ?? emptyRecord(bId, match.teamB)
+
+    a.played += 1
+    b.played += 1
+    a.scoreFor += match.scoreA
+    a.scoreAgainst += match.scoreB
+    b.scoreFor += match.scoreB
+    b.scoreAgainst += match.scoreA
+
+    if (match.scoreA > match.scoreB) {
+      a.wins += 1
+      a.points += 3
+      b.losses += 1
+    } else if (match.scoreB > match.scoreA) {
+      b.wins += 1
+      b.points += 3
+      a.losses += 1
+    }
+
+    stats.set(aId, a)
+    stats.set(bId, b)
+  })
+
+  const standings = [...stats.values()].sort((x, y) => {
+    if (y.points !== x.points) return y.points - x.points
+    if (y.wins !== x.wins) return y.wins - x.wins
+    const diffX = x.scoreFor - x.scoreAgainst
+    const diffY = y.scoreFor - y.scoreAgainst
+    if (diffY !== diffX) return diffY - diffX
+    return x.name.localeCompare(y.name)
+  })
+
+  const isComplete =
+    groupMatches.length > 0 && groupMatches.every((m) => m.scoreA != null && m.scoreB != null)
+
+  return { standings, isComplete }
+}
+
+const PLACE_LABELS = ['1st', '2nd']
+
+// Which teams actually reach the playoffs isn't known until the Group Stage
+// finishes, so a semifinal slot shows a standing placeholder ("Group A • 1st")
+// until that group's standings are complete, then reveals the real team. A slot
+// is a Bye only if the group is too small to even have a team in that standing.
+function seedFromStandings(groupLabel, place, groupSize, standings, isComplete) {
+  const isBye = place > groupSize
+  if (isBye) {
+    return { id: `seed-${groupLabel}-${place}`, name: 'Bye', isBye: true }
+  }
+
+  if (isComplete && standings[place - 1]) {
+    return { id: `seed-${groupLabel}-${place}-${standings[place - 1].name}`, name: standings[place - 1].name, isBye: false }
+  }
+
+  return {
+    id: `seed-${groupLabel}-${place}`,
+    name: `Group ${groupLabel} • ${PLACE_LABELS[place - 1]}`,
+    isBye: false,
+  }
+}
+
+// Top 2 from each group cross over: 1st in a group faces 2nd in the other.
+function buildPlayoffMatches(groupASize, groupBSize, standingsA, standingsB, isCompleteA, isCompleteB) {
+  const seedsA = [1, 2].map((place) => seedFromStandings('A', place, groupASize, standingsA, isCompleteA))
+  const seedsB = [1, 2].map((place) => seedFromStandings('B', place, groupBSize, standingsB, isCompleteB))
+
+  const semifinalPairs = [
+    [seedsA[0], seedsB[1]],
+    [seedsB[0], seedsA[1]],
   ]
 
-  const totalRounds = 3
-  const roundLabels = ['Quarterfinals', 'Semifinals', 'Final']
+  const totalRounds = 2
+  const roundLabels = ['Semifinals', 'Final']
   const matches = []
 
   for (let roundIndex = 0; roundIndex < totalRounds; roundIndex += 1) {
-    const currentRoundSize = 4 / 2 ** roundIndex
+    const currentRoundSize = 2 / 2 ** roundIndex
     const label = roundLabels[roundIndex]
 
     for (let matchIndex = 0; matchIndex < currentRoundSize; matchIndex += 1) {
@@ -122,22 +184,20 @@ function buildPlayoffMatches(groupA, groupB) {
       ]
 
       if (roundIndex === 0) {
-        const [topTeam, bottomTeam] = quarterfinalPairs[matchIndex]
+        const [topSeed, bottomSeed] = semifinalPairs[matchIndex]
 
         participants = [
           {
-            id: topTeam.id,
-            name: topTeam.name,
-            status: topTeam.isBye ? 'NO_SHOW' : null,
-            players: topTeam.players,
-            resultText: topTeam.isBye ? 'BYE' : null,
+            id: topSeed.id,
+            name: topSeed.name,
+            status: topSeed.isBye ? 'NO_SHOW' : null,
+            resultText: topSeed.isBye ? 'BYE' : null,
           },
           {
-            id: bottomTeam.id,
-            name: bottomTeam.name,
-            status: bottomTeam.isBye ? 'NO_SHOW' : null,
-            players: bottomTeam.players,
-            resultText: bottomTeam.isBye ? 'BYE' : null,
+            id: bottomSeed.id,
+            name: bottomSeed.name,
+            status: bottomSeed.isBye ? 'NO_SHOW' : null,
+            resultText: bottomSeed.isBye ? 'BYE' : null,
           },
         ]
       }
@@ -157,6 +217,10 @@ function buildPlayoffMatches(groupA, groupB) {
   return matches
 }
 
+// The bracket library renders this inside a fixed-size foreignObject (see
+// MATCH_BOX_WIDTH/MATCH_BOX_HEIGHT below, passed as options.style to
+// SingleEliminationBracket) — both parties use flex-1 so they always split that
+// box evenly and stay fully visible instead of being clipped by a taller card.
 function CustomMatch({ topParty, bottomParty }) {
   const renderParty = (party) => {
     const playerText = party?.players?.length ? party.players.join(' • ') : ''
@@ -164,76 +228,299 @@ function CustomMatch({ topParty, bottomParty }) {
     return (
       <div
         title={playerText || undefined}
-        className="flex min-h-[44px] flex-col justify-center rounded-md border border-white/10 bg-[rgba(255,255,255,0.04)] px-2 py-1.5 text-left"
+        className="flex flex-1 flex-col justify-center overflow-hidden rounded-md border border-white/10 bg-[rgba(255,255,255,0.04)] px-2 py-1 text-left"
       >
-        <span className="font-inter text-[11px] font-semibold text-white">
+        <span className="truncate font-inter text-[11px] font-semibold text-white">
           {party?.name || 'TBD'}
         </span>
         {playerText ? (
-          <span className="mt-0.5 text-[10px] text-[var(--text-mut)]">{playerText}</span>
+          <span className="mt-0.5 truncate text-[10px] text-[var(--text-mut)]">{playerText}</span>
         ) : null}
       </div>
     )
   }
 
   return (
-    <div className="flex min-w-[180px] flex-col gap-2 rounded-lg border border-white/10 bg-[rgba(10,14,26,0.94)] p-2 shadow-[0_0_20px_rgba(0,0,0,0.2)]">
+    <div className="flex h-full w-full flex-col gap-1.5 rounded-lg border border-white/10 bg-[rgba(10,14,26,0.94)] p-2 shadow-[0_0_20px_rgba(0,0,0,0.2)]">
       {renderParty(topParty)}
-      <div className="h-px w-full bg-white/10" />
+      <div className="h-px w-full shrink-0 bg-white/10" />
       {renderParty(bottomParty)}
+    </div>
+  )
+}
+
+function formatMatchDate(dateStr) {
+  if (!dateStr) return ''
+  // Apps Script sends "yyyy-MM-dd HH:mm" — swap the space for "T" so Date parses
+  // it as local time instead of either failing or treating it as UTC.
+  const date = new Date(dateStr.replace(' ', 'T'))
+  if (Number.isNaN(date.getTime())) return dateStr
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
+function StandingsTable({ standings }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-white/10">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="bg-white/5">
+            <th className="px-3 py-2 text-left font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+              Team
+            </th>
+            <th className="px-2 py-2 text-center font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+              P
+            </th>
+            <th className="px-2 py-2 text-center font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+              W
+            </th>
+            <th className="px-2 py-2 text-center font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+              L
+            </th>
+            <th className="px-3 py-2 text-center font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+              Pts
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {standings.map((team, i) => (
+            <tr key={team.id} className="border-t border-white/5 odd:bg-white/[0.03]">
+              <td className="px-3 py-2 font-inter text-sm text-white">
+                <span className="mr-2 font-oswald text-xs font-semibold text-[var(--gold-soft)]">
+                  {i + 1}
+                </span>
+                {team.name}
+              </td>
+              <td className="px-2 py-2 text-center font-inter text-sm text-[var(--text-mut)]">{team.played}</td>
+              <td className="px-2 py-2 text-center font-inter text-sm text-[var(--text-mut)]">{team.wins}</td>
+              <td className="px-2 py-2 text-center font-inter text-sm text-[var(--text-mut)]">{team.losses}</td>
+              <td className="px-3 py-2 text-center font-oswald text-sm font-semibold text-white">{team.points}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ScheduleTable({ matches }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-white/10">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="bg-white/5">
+            <th className="w-32 px-3 py-2 text-left font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+              Date
+            </th>
+            <th className="px-3 py-2 text-left font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+              Match
+            </th>
+            <th className="w-16 px-3 py-2 text-center font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+              Score
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {matches.map((match) => {
+            const played = match.scoreA != null && match.scoreB != null
+            return (
+              <tr key={match.id} className="border-t border-white/5 odd:bg-white/[0.03]">
+                <td className="px-3 py-2 font-inter text-xs text-[var(--text-mut)]">
+                  {formatMatchDate(match.date)}
+                </td>
+                <td className="px-3 py-2 font-inter text-sm text-[var(--text)]">
+                  <span className={played && match.scoreA > match.scoreB ? 'font-semibold text-white' : 'font-semibold text-[var(--text-mut)]'}>
+                    {match.teamA}
+                  </span>
+                  <span className="mx-1.5 text-[var(--text-mut)]">vs</span>
+                  <span className={played && match.scoreB > match.scoreA ? 'font-semibold text-white' : 'font-semibold text-[var(--text-mut)]'}>
+                    {match.teamB}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-center font-oswald text-sm text-[var(--gold-soft)]">
+                  {played ? `${match.scoreA} – ${match.scoreB}` : '—'}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
 
 function GroupRoundRobin({ title, rounds }) {
   return (
-    <div>
+    <div className="rounded-xl border border-white/10 bg-black/20 p-4">
       <h3 className="mb-3 font-oswald text-sm font-semibold uppercase tracking-wide text-[var(--gold-soft)]">
         {title}
       </h3>
       {rounds.length === 0 ? (
-        <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-center font-inter text-sm text-[var(--text-mut)]">
-          Not enough teams yet.
-        </div>
+        <p className="font-inter text-sm text-[var(--text-mut)]">Not enough teams yet.</p>
       ) : (
-        <div className="space-y-3">
-          {rounds.map((round) => (
-            <div key={round.id} className="rounded-xl border border-white/10 bg-black/20 p-4">
-              <h4 className="mb-2 font-oswald text-xs font-semibold uppercase tracking-wide text-[var(--text-mut)]">
-                {round.title}
-              </h4>
-              <ul className="space-y-2">
-                {round.matches.map((match) => (
-                  <li
-                    key={match.id}
-                    className="flex flex-wrap items-center gap-2 font-inter text-sm text-[var(--text)]"
-                  >
-                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] uppercase tracking-[0.2em] text-[var(--text-mut)]">
-                      Match
-                    </span>
-                    <span className="font-semibold text-white">{match.home.name}</span>
-                    <span className="text-[var(--text-mut)]">vs</span>
-                    <span className="font-semibold text-white">{match.away.name}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
+        <div className="overflow-hidden rounded-lg border border-white/10">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="bg-white/5">
+                <th className="w-20 px-3 py-2 text-left font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+                  Round
+                </th>
+                <th className="px-3 py-2 text-left font-oswald text-[11px] font-semibold uppercase tracking-wider text-[var(--text-mut)]">
+                  Match
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rounds.flatMap((round) =>
+                round.matches.map((match, matchIndex) => (
+                  <tr key={match.id} className="border-t border-white/5 odd:bg-white/[0.03]">
+                    {matchIndex === 0 && (
+                      <td
+                        rowSpan={round.matches.length}
+                        className="border-t border-white/5 px-3 py-2 align-top font-oswald text-xs font-semibold text-[var(--gold-soft)]"
+                      >
+                        R{round.roundNumber}
+                      </td>
+                    )}
+                    <td className="px-3 py-2 font-inter text-sm text-[var(--text)]">
+                      <span className="font-semibold text-white">{match.home.name}</span>
+                      <span className="mx-1.5 text-[var(--text-mut)]">vs</span>
+                      <span className="font-semibold text-white">{match.away.name}</span>
+                    </td>
+                  </tr>
+                )),
+              )}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
   )
 }
 
+function GroupCard({ title, groupTeams, groupMatches, standings }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+      <h3 className="mb-3 font-oswald text-sm font-semibold uppercase tracking-wide text-[var(--gold-soft)]">
+        {title}
+      </h3>
+      {groupTeams.length === 0 ? (
+        <p className="font-inter text-sm text-[var(--text-mut)]">No teams assigned yet.</p>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <h4 className="mb-2 font-oswald text-xs font-semibold uppercase tracking-wide text-[var(--text-mut)]">
+              Standings
+            </h4>
+            <StandingsTable standings={standings} />
+          </div>
+          {groupMatches.length > 0 && (
+            <div>
+              <h4 className="mb-2 font-oswald text-xs font-semibold uppercase tracking-wide text-[var(--text-mut)]">
+                Match Schedule
+              </h4>
+              <ScheduleTable matches={groupMatches} />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Sizes the bracket SVG to the available container width instead of a fixed 980x620,
+// so it fills wide screens without wasted whitespace and only scrolls when the
+// minimum readable width genuinely doesn't fit (small phones).
+function ResponsiveBracket({ matches, matchComponent }) {
+  const containerRef = useRef(null)
+  const [width, setWidth] = useState(BRACKET_MIN_WIDTH)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver((entries) => {
+      const measured = entries[0]?.contentRect.width
+      if (measured) setWidth(Math.max(Math.round(measured), BRACKET_MIN_WIDTH))
+    })
+
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  const height = Math.round(width * BRACKET_ASPECT_RATIO)
+
+  return (
+    <div ref={containerRef} className="w-full overflow-x-auto">
+      <SingleEliminationBracket
+        matches={matches}
+        matchComponent={matchComponent}
+        options={{
+          style: {
+            width: MATCH_BOX_WIDTH,
+            boxHeight: MATCH_BOX_HEIGHT,
+            spaceBetweenColumns: 40,
+            spaceBetweenRows: 28,
+          },
+        }}
+        svgWrapper={({ children, bracketWidth, bracketHeight, ...props }) => {
+          // react-svg-pan-zoom only widens its zoom-out limit *after* the first pan/zoom
+          // event, so on load it's pinned at 100% and can't zoom out even when the
+          // bracket is taller/wider than the viewer. Compute the "fit the whole
+          // bracket" scale ourselves and use it as the floor from the start.
+          //
+          // Important: this must never go BELOW the exact fit scale. The library's pan
+          // clamping assumes the scaled content is always at least as big as the
+          // viewer; once it's zoomed out past that (content smaller than viewer), the
+          // clamp math goes negative and the view snaps/jumps erratically. Capping at
+          // exactly `fitScale` (never less) keeps it in the regime the library expects.
+          const fitScale =
+            bracketWidth && bracketHeight
+              ? Math.min(width / bracketWidth, height / bracketHeight)
+              : 1
+          const scaleFactorMin = Math.min(1, fitScale)
+
+          // Center the bracket in the viewer on load instead of starting pinned to the
+          // top-left corner — only has room to act when the bracket is smaller than
+          // the viewer, since pan is otherwise clamped back to the content edge.
+          const startAt =
+            bracketWidth && bracketHeight
+              ? [Math.max(0, (width - bracketWidth) / 2), Math.max(0, (height - bracketHeight) / 2)]
+              : [0, 0]
+
+          return (
+            <SVGViewer
+              width={width}
+              height={height}
+              bracketWidth={bracketWidth}
+              bracketHeight={bracketHeight}
+              scaleFactorMin={scaleFactorMin}
+              startAt={startAt}
+              {...props}
+            >
+              {children}
+            </SVGViewer>
+          )
+        }}
+      />
+    </div>
+  )
+}
+
 export default function BracketPage() {
   const [teams, setTeams] = useState([])
+  const [schedule, setSchedule] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   useEffect(() => {
     const controller = new AbortController()
 
-    async function loadTeams() {
+    async function loadData() {
       try {
         setLoading(true)
         setError('')
@@ -248,8 +535,8 @@ export default function BracketPage() {
         }
 
         const payload = await response.json()
-        const nextTeams = Array.isArray(payload?.teams) ? payload.teams : []
-        setTeams(nextTeams)
+        setTeams(Array.isArray(payload?.teams) ? payload.teams : [])
+        setSchedule(Array.isArray(payload?.schedule) ? payload.schedule : [])
       } catch (err) {
         if (err.name !== 'AbortError') {
           setError('Unable to load teams. Registration is still open.')
@@ -259,7 +546,7 @@ export default function BracketPage() {
       }
     }
 
-    loadTeams()
+    loadData()
 
     return () => controller.abort()
   }, [])
@@ -267,29 +554,38 @@ export default function BracketPage() {
   const { groupA, groupB } = splitIntoGroups(teams)
   const groupARounds = buildRoundRobinFixtures(groupA, 'Group A')
   const groupBRounds = buildRoundRobinFixtures(groupB, 'Group B')
-  const playoffMatches = teams.length >= 2 ? buildPlayoffMatches(groupA, groupB) : []
+  const scheduleA = schedule.filter((match) => match.group === 'A')
+  const scheduleB = schedule.filter((match) => match.group === 'B')
+  const { standings: standingsA, isComplete: isCompleteA } = computeStandings(groupA, scheduleA)
+  const { standings: standingsB, isComplete: isCompleteB } = computeStandings(groupB, scheduleB)
+
+  const playoffMatches =
+    teams.length > 0
+      ? buildPlayoffMatches(groupA.length, groupB.length, standingsA, standingsB, isCompleteA, isCompleteB)
+      : []
 
   return (
-    <InfoPage kicker="Esports League" title="Tournament Bracket">
+    <InfoPage kicker="Esports League" title="Tournament Bracket" maxWidthClass="max-w-[960px]">
       <Section title="🧠 Tournament Flow">
         <p>
           Teams are split evenly into Group A and Group B for a round-robin stage, then the
-          top 4 from each group cross over into a single-elimination playoff bracket.
+          top 2 from each group cross over into a single-elimination playoff bracket.
         </p>
         <List
           items={[
             <>
               <strong className="text-[var(--gold-soft)]">Group Stage:</strong> Each team plays
-              every other team in its own group.
+              every other team in its own group. Matches run every Saturday morning after shift
+              — one Group A match and one Group B match each week.
             </>,
             <>
               <strong className="text-[var(--gold-soft)]">Crossover Playoffs:</strong> 1st place
-              in a group faces 4th place in the other group, and 2nd faces 3rd — the classic
-              World Cup-style bracket.
+              in a group faces 2nd place in the other group — the classic World Cup-style
+              crossover.
             </>,
             <>
               <strong className="text-[var(--gold-soft)]">Byes:</strong> If a group has fewer
-              than 4 teams, the schedule automatically inserts Bye slots.
+              than 2 teams, the schedule automatically inserts a Bye slot.
             </>,
           ]}
         />
@@ -309,9 +605,30 @@ export default function BracketPage() {
             No teams were returned by the Apps Script endpoint yet.
           </div>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 lg:grid-cols-2">
             <GroupRoundRobin title="Group A" rounds={groupARounds} />
             <GroupRoundRobin title="Group B" rounds={groupBRounds} />
+          </div>
+        )}
+      </Section>
+
+      <Section title="📊 Team Standings & Match Schedule">
+        {loading ? (
+          <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-center font-inter text-sm text-[var(--text-mut)]">
+            Fetching generated teams...
+          </div>
+        ) : error ? (
+          <div className="rounded-xl border border-red-400/30 bg-red-500/10 p-6 text-center font-inter text-sm text-red-200">
+            {error}
+          </div>
+        ) : teams.length === 0 ? (
+          <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-center font-inter text-sm text-[var(--text-mut)]">
+            No teams were returned by the Apps Script endpoint yet.
+          </div>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <GroupCard title="Group A" groupTeams={groupA} groupMatches={scheduleA} standings={standingsA} />
+            <GroupCard title="Group B" groupTeams={groupB} groupMatches={scheduleB} standings={standingsB} />
           </div>
         )}
       </Section>
@@ -327,24 +644,17 @@ export default function BracketPage() {
           </div>
         ) : playoffMatches.length === 0 ? (
           <div className="rounded-xl border border-white/10 bg-black/20 p-6 text-center font-inter text-sm text-[var(--text-mut)]">
-            There are not enough teams to build the playoff bracket yet.
+            Teams haven't been generated yet — check back once the Group Stage is set.
           </div>
         ) : (
           <>
             <p className="mb-4 font-inter text-xs text-[var(--text-mut)]">
-              Seeded by current group order — this will reflect real standings once match
-              results are tracked.
+              Which teams reach the playoffs is decided by Group Stage results, so a slot shows
+              standing (e.g. "Group A • 1st") until that group's matches are all played, then
+              reveals the actual team.
             </p>
-            <div className="overflow-x-auto rounded-xl border border-white/10 bg-black/20 p-4">
-              <SingleEliminationBracket
-                matches={playoffMatches}
-                matchComponent={CustomMatch}
-                svgWrapper={({ children, ...props }) => (
-                  <SVGViewer width={980} height={620} {...props}>
-                    {children}
-                  </SVGViewer>
-                )}
-              />
+            <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+              <ResponsiveBracket matches={playoffMatches} matchComponent={CustomMatch} />
             </div>
           </>
         )}
