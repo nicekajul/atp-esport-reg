@@ -137,6 +137,17 @@ function computeStandings(groupTeams, groupMatches) {
   return { standings, isComplete }
 }
 
+// Tallies a Best-of-N series from its recorded per-game scores. A series is only
+// "decided" once one side has reached the majority of games (1 of 1 for a single
+// match, 2 of 3 for a Best of 3) — a partially-played series has no winner yet.
+function computeSeriesResult(games, bestOf) {
+  const winsA = games.filter((g) => g.a > g.b).length
+  const winsB = games.filter((g) => g.b > g.a).length
+  const neededWins = Math.ceil((bestOf || 1) / 2)
+  const winner = winsA >= neededWins ? 'A' : winsB >= neededWins ? 'B' : null
+  return { winsA, winsB, winner, isComplete: winner !== null }
+}
+
 const PLACE_LABELS = ['1st', '2nd']
 
 // Which teams actually reach the playoffs isn't known until the Group Stage
@@ -160,8 +171,22 @@ function seedFromStandings(groupLabel, place, groupSize, standings, isComplete) 
   }
 }
 
-// Top 2 from each group cross over: 1st in a group faces 2nd in the other.
-function buildPlayoffMatches(groupASize, groupBSize, standingsA, standingsB, isCompleteA, isCompleteB) {
+// Builds a participant entry with score/win-loss info from a decided-or-in-progress
+// series against the OTHER party in the same match (so each side shows its own game
+// win count once any games have been recorded).
+function seriesParticipant(seed, ownWins, otherWins, hasGames, isWinner) {
+  return {
+    id: seed.id,
+    name: seed.name,
+    status: seed.isBye ? 'NO_SHOW' : isWinner === true ? 'WON' : isWinner === false ? 'LOST' : null,
+    resultText: seed.isBye ? 'BYE' : hasGames ? String(ownWins) : null,
+  }
+}
+
+// Top 2 from each group cross over: 1st in a group faces 2nd in the other. Semifinal
+// winners are pulled from the Playoffs sheet's recorded scores and fed forward as the
+// Final's actual participants once each series is decided.
+function buildPlayoffMatches(groupASize, groupBSize, standingsA, standingsB, isCompleteA, isCompleteB, playoffs) {
   const seedsA = [1, 2].map((place) => seedFromStandings('A', place, groupASize, standingsA, isCompleteA))
   const seedsB = [1, 2].map((place) => seedFromStandings('B', place, groupBSize, standingsB, isCompleteB))
 
@@ -173,6 +198,9 @@ function buildPlayoffMatches(groupASize, groupBSize, standingsA, standingsB, isC
   const totalRounds = 2
   const roundLabels = ['Semifinals', 'Final (Best of 3)']
   const matches = []
+
+  // Semifinal winners, resolved below, feed into the Final's participants.
+  const semifinalWinners = []
 
   for (let roundIndex = 0; roundIndex < totalRounds; roundIndex += 1) {
     const currentRoundSize = 2 / 2 ** roundIndex
@@ -190,20 +218,55 @@ function buildPlayoffMatches(groupASize, groupBSize, standingsA, standingsB, isC
 
       if (roundIndex === 0) {
         const [topSeed, bottomSeed] = semifinalPairs[matchIndex]
+        const slotId = matchIndex === 0 ? 'SF1' : 'SF2'
+        const slot = playoffs?.[slotId]
+        const hasGames = Boolean(slot?.games?.length)
+        const result = hasGames
+          ? computeSeriesResult(slot.games, slot.bestOf || 1)
+          : { winsA: 0, winsB: 0, winner: null, isComplete: false }
 
         participants = [
-          {
-            id: topSeed.id,
-            name: topSeed.name,
-            status: topSeed.isBye ? 'NO_SHOW' : null,
-            resultText: topSeed.isBye ? 'BYE' : null,
-          },
-          {
-            id: bottomSeed.id,
-            name: bottomSeed.name,
-            status: bottomSeed.isBye ? 'NO_SHOW' : null,
-            resultText: bottomSeed.isBye ? 'BYE' : null,
-          },
+          seriesParticipant(
+            topSeed,
+            result.winsA,
+            result.winsB,
+            hasGames,
+            result.winner ? result.winner === 'A' : undefined,
+          ),
+          seriesParticipant(
+            bottomSeed,
+            result.winsB,
+            result.winsA,
+            hasGames,
+            result.winner ? result.winner === 'B' : undefined,
+          ),
+        ]
+
+        if (result.isComplete && !topSeed.isBye && !bottomSeed.isBye) {
+          semifinalWinners[matchIndex] = result.winner === 'A' ? topSeed : bottomSeed
+        } else if (topSeed.isBye && !bottomSeed.isBye) {
+          semifinalWinners[matchIndex] = bottomSeed
+        } else if (bottomSeed.isBye && !topSeed.isBye) {
+          semifinalWinners[matchIndex] = topSeed
+        }
+      }
+
+      if (roundIndex === 1) {
+        const topWinner = semifinalWinners[0]
+        const bottomWinner = semifinalWinners[1]
+        const slot = playoffs?.F
+        const hasGames = Boolean(slot?.games?.length)
+        const result = hasGames
+          ? computeSeriesResult(slot.games, slot.bestOf || 3)
+          : { winsA: 0, winsB: 0, winner: null, isComplete: false }
+
+        participants = [
+          topWinner
+            ? seriesParticipant(topWinner, result.winsA, result.winsB, hasGames, result.winner ? result.winner === 'A' : undefined)
+            : { id: `tbd-${matchId}-top`, name: 'TBD', status: null },
+          bottomWinner
+            ? seriesParticipant(bottomWinner, result.winsB, result.winsA, hasGames, result.winner ? result.winner === 'B' : undefined)
+            : { id: `tbd-${matchId}-bottom`, name: 'TBD', status: null },
         ]
       }
 
@@ -229,17 +292,32 @@ function buildPlayoffMatches(groupASize, groupBSize, standingsA, standingsB, isC
 function CustomMatch({ topParty, bottomParty }) {
   const renderParty = (party) => {
     const playerText = party?.players?.length ? party.players.join(' • ') : ''
+    const isWinner = party?.status === 'WON'
+    const isLoser = party?.status === 'LOST'
 
     return (
       <div
         title={playerText || undefined}
-        className="flex flex-1 flex-col justify-center overflow-hidden rounded-md border border-white/10 bg-[rgba(255,255,255,0.04)] px-2 py-1 text-left"
+        className={`flex flex-1 flex-row items-center justify-between gap-2 overflow-hidden rounded-md border px-2 py-1 text-left ${
+          isWinner ? 'border-[var(--gold-soft)]/50 bg-[rgba(212,175,55,0.08)]' : 'border-white/10 bg-[rgba(255,255,255,0.04)]'
+        }`}
       >
-        <span className="truncate font-inter text-[11px] font-semibold text-white">
-          {party?.name || 'TBD'}
-        </span>
-        {playerText ? (
-          <span className="mt-0.5 truncate text-[10px] text-[var(--text-mut)]">{playerText}</span>
+        <div className="flex min-w-0 flex-col justify-center">
+          <span
+            className={`truncate font-inter text-[11px] font-semibold ${isLoser ? 'text-[var(--text-mut)]' : 'text-white'}`}
+          >
+            {party?.name || 'TBD'}
+          </span>
+          {playerText ? (
+            <span className="mt-0.5 truncate text-[10px] text-[var(--text-mut)]">{playerText}</span>
+          ) : null}
+        </div>
+        {party?.resultText ? (
+          <span
+            className={`shrink-0 font-oswald text-[11px] font-semibold ${isWinner ? 'text-[var(--gold-soft)]' : 'text-[var(--text-mut)]'}`}
+          >
+            {party.resultText}
+          </span>
         ) : null}
       </div>
     )
@@ -535,6 +613,7 @@ function ResponsiveBracket({ matches, matchComponent }) {
 export default function BracketPage() {
   const [teams, setTeams] = useState([])
   const [schedule, setSchedule] = useState([])
+  const [playoffs, setPlayoffs] = useState({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -558,6 +637,7 @@ export default function BracketPage() {
         const payload = await response.json()
         setTeams(Array.isArray(payload?.teams) ? payload.teams : [])
         setSchedule(Array.isArray(payload?.schedule) ? payload.schedule : [])
+        setPlayoffs(payload?.playoffs && typeof payload.playoffs === 'object' ? payload.playoffs : {})
       } catch (err) {
         if (err.name !== 'AbortError') {
           setError('Unable to load teams. Registration is still open.')
@@ -582,7 +662,7 @@ export default function BracketPage() {
 
   const playoffMatches =
     teams.length > 0
-      ? buildPlayoffMatches(groupA.length, groupB.length, standingsA, standingsB, isCompleteA, isCompleteB)
+      ? buildPlayoffMatches(groupA.length, groupB.length, standingsA, standingsB, isCompleteA, isCompleteB, playoffs)
       : []
 
   return (
@@ -672,7 +752,9 @@ export default function BracketPage() {
             <p className="mb-4 font-inter text-xs text-[var(--text-mut)]">
               Which teams reach the playoffs is decided by Group Stage results, so a slot shows
               standing (e.g. "Group A • 1st") until that group's matches are all played, then
-              reveals the actual team.
+              reveals the actual team. Once a series has games recorded, each side shows its
+              game-win count and the winner is highlighted — the Final's winner is pulled forward
+              automatically once a Semifinal is decided.
             </p>
             <div className="rounded-xl border border-white/10 bg-black/20 p-4">
               <ResponsiveBracket matches={playoffMatches} matchComponent={CustomMatch} />

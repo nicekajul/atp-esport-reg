@@ -1,6 +1,7 @@
 const SHEET_NAME = 'Registrations';
 const TEAMS_SHEET_NAME = 'Teams';
 const SCHEDULE_SHEET_NAME = 'Schedule';
+const PLAYOFFS_SHEET_NAME = 'Playoffs';
 const PLAYERS_PER_TEAM = 3; // 3v3 tournament — base team size
 const MAX_PLAYERS_PER_TEAM = 4; // the forced-teammates team and the substitute's team carry a 4th player
 
@@ -23,6 +24,16 @@ const FORCED_TEAMMATES = [
 // different normal team (never on a forced-teammates team).
 const SUBSTITUTE_IGNS = ['janajevb', 'Gab²'];
 
+// Fixed playoff match slots. Which teams actually play each slot is decided by Group
+// Stage standings (computed on the frontend), so this sheet only tracks per-game
+// scores by slot ID — not team names. Semifinals are single matches; the Final is a
+// Best of 3, so it gets up to 3 game-score columns.
+const PLAYOFF_MATCHES = [
+  { id: 'SF1', name: 'Semifinal 1', bestOf: 1 },
+  { id: 'SF2', name: 'Semifinal 2', bestOf: 1 },
+  { id: 'F', name: 'Final', bestOf: 3 },
+];
+
 // 1. Run this ONCE from the editor to create the sheet + headers.
 function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -38,7 +49,41 @@ function onOpen() {
     .createMenu('🎮 Esports Admin')
     .addItem('Generate Random Teams', 'generateTeams')
     .addItem('Generate Match Schedule', 'generateSchedule')
+    .addItem('Setup Playoffs Sheet', 'setupPlayoffs')
     .addToUi();
+}
+
+// Creates (or resets) the 'Playoffs' sheet with one row per fixed slot (SF1, SF2, F).
+// Run this once the bracket is ready to be scored, then fill in Score A / Score B for
+// each game as it's played — Game 2/3 only apply to the Final's Best of 3.
+function setupPlayoffs() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(PLAYOFFS_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(PLAYOFFS_SHEET_NAME);
+  } else {
+    sheet.clear();
+  }
+
+  const headers = [
+    'Match ID', 'Match Name', 'Best Of',
+    'Game 1 Score A', 'Game 1 Score B',
+    'Game 2 Score A', 'Game 2 Score B',
+    'Game 3 Score A', 'Game 3 Score B',
+  ];
+  sheet.appendRow(headers);
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+
+  PLAYOFF_MATCHES.forEach(({ id, name, bestOf }) => {
+    sheet.appendRow([id, name, bestOf, '', '', '', '', '', '']);
+  });
+
+  sheet.autoResizeColumns(1, headers.length);
+  SpreadsheetApp.getUi().alert(
+    `Playoffs sheet ready. Fill in Score A / Score B for each game as it's played — ` +
+    `the site figures out the series winner and advances them automatically. Semifinal ` +
+    `rows only need Game 1; the Final uses however many of its 3 games are needed to decide it.`
+  );
 }
 
 // 3. Logic to randomly assign teams into Group A / Group B
@@ -310,7 +355,28 @@ function doGet(e) {
     }
   }
 
-  return json({ result: 'success', teams, schedule });
+  const playoffs = {};
+  const playoffsSheet = ss.getSheetByName(PLAYOFFS_SHEET_NAME);
+  if (playoffsSheet) {
+    const playoffsData = playoffsSheet.getDataRange().getValues();
+    for (let i = 1; i < playoffsData.length; i++) {
+      const row = playoffsData[i];
+      const matchId = row[0].toString();
+      const games = [];
+      // Columns 3-4, 5-6, 7-8 (0-indexed) are Game 1/2/3's Score A/Score B. A game only
+      // counts once both of its scores are filled in — a half-entered game is ignored.
+      for (let g = 0; g < 3; g++) {
+        const scoreA = row[3 + g * 2];
+        const scoreB = row[4 + g * 2];
+        if (scoreA !== '' && scoreB !== '') {
+          games.push({ a: Number(scoreA), b: Number(scoreB) });
+        }
+      }
+      playoffs[matchId] = { name: row[1], bestOf: Number(row[2]), games };
+    }
+  }
+
+  return json({ result: 'success', teams, schedule, playoffs });
 }
 
 // 6. Registration POST endpoint
