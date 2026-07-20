@@ -1,7 +1,8 @@
 const SHEET_NAME = 'Registrations';
 const TEAMS_SHEET_NAME = 'Teams';
 const SCHEDULE_SHEET_NAME = 'Schedule';
-const PLAYERS_PER_TEAM = 3; // 3v3 tournament
+const PLAYERS_PER_TEAM = 3; // 3v3 tournament — base team size
+const MAX_PLAYERS_PER_TEAM = 4; // the forced-teammates team and the substitute's team carry a 4th player
 
 // First match Saturday of the Group Stage. Matches run weekly from here — edit this
 // if the actual kickoff date/time changes, then re-run "Generate Match Schedule".
@@ -10,10 +11,16 @@ const SCHEDULE_START_DATE = new Date(2026, 6, 25, 8, 30); // July 25, 2026, 8:30
 // Groups of IGNs that must always land on the same team when teams are (re)generated.
 // Matching is exact after trimming + lowercasing, so these must match the IGNs exactly
 // as registered — double-check spelling/spacing against the Registrations sheet.
-// Add more arrays here for other forced groupings.
+// Add more entries here for other forced groupings. teamSize defaults to PLAYERS_PER_TEAM
+// when omitted; the entry below has all 4 members named explicitly, so no random fill is needed.
 const FORCED_TEAMMATES = [
-  ['sir Jay BoknoyDaGreat', 'sir frank'],
+  { members: ['sir Jay', 'BoknoyDaGreat', 'sir frank', 'Dash'], teamSize: 4 },
+  { members: ['Ayay!_NkaTug_ko!', 'FishTea'], teamSize: 3 },
 ];
+
+// A single registrant added as a 4th member to a normal (non-forced) random team, to
+// balance roster sizes against the forced-teammates team above. Never assigned to that team.
+const SUBSTITUTE_IGN = 'janajevb';
 
 // 1. Run this ONCE from the editor to create the sheet + headers.
 function setup() {
@@ -58,25 +65,35 @@ function generateTeams() {
   // the same team regardless of the random draw. A group only "locks" if 2+ of its
   // members actually registered this time — a solo entrant just rejoins the pool.
   const remaining = [...players];
+
+  // Pull the designated substitute out of the pool too — they're added as a 4th
+  // member to a normal random team below, never to the forced-teammates team.
+  let substitute = null;
+  const subIdx = remaining.findIndex(p => p.toLowerCase() === SUBSTITUTE_IGN.trim().toLowerCase());
+  if (subIdx !== -1) {
+    substitute = remaining[subIdx];
+    remaining.splice(subIdx, 1);
+  }
+
   const lockedGroups = [];
 
-  FORCED_TEAMMATES.forEach(group => {
+  FORCED_TEAMMATES.forEach(({ members, teamSize }) => {
     const matched = [];
-    group.forEach(ign => {
+    members.forEach(ign => {
       const idx = remaining.findIndex(p => p.toLowerCase() === ign.trim().toLowerCase());
       if (idx !== -1) {
         matched.push(remaining[idx]);
         remaining.splice(idx, 1);
       }
     });
-    if (matched.length > 1) lockedGroups.push(matched);
+    if (matched.length > 1) lockedGroups.push({ members: matched, teamSize: teamSize || PLAYERS_PER_TEAM });
   });
 
   // Seed one team per locked group, filling any remaining slots from the shuffled pool.
   const teams = [];
-  lockedGroups.forEach(group => {
-    const team = [...group];
-    while (team.length < PLAYERS_PER_TEAM && remaining.length) {
+  lockedGroups.forEach(({ members, teamSize }) => {
+    const team = [...members];
+    while (team.length < teamSize && remaining.length) {
       team.push(remaining.shift());
     }
     teams.push(team);
@@ -85,6 +102,17 @@ function generateTeams() {
   // Everyone else forms teams normally, in chunks of PLAYERS_PER_TEAM.
   for (let i = 0; i < remaining.length; i += PLAYERS_PER_TEAM) {
     teams.push(remaining.slice(i, i + PLAYERS_PER_TEAM));
+  }
+
+  // Add the substitute as a 4th member of the first normal (non-forced) team, to
+  // balance rosters against the forced-teammates team's extra player.
+  if (substitute) {
+    const normalTeamsStart = lockedGroups.length;
+    if (teams.length > normalTeamsStart) {
+      teams[normalTeamsStart].push(substitute);
+    } else {
+      teams.push([substitute]);
+    }
   }
 
   // Pad any short team (including a locked group that ran out of free players) with blanks.
@@ -108,15 +136,18 @@ function generateTeams() {
     teamsSheet.clear(); // Clears previous generation
   }
 
-  // Set up Headers
-  const headers = ['Team ID', 'Team Name', 'Group', ...Array.from({length: PLAYERS_PER_TEAM}, (_, i) => `Player ${i+1}`)];
+  // Set up Headers — sized for the largest possible team (4), so the forced-teammates
+  // team and the substitute's team don't get truncated. Shorter teams leave trailing blanks.
+  const headers = ['Team ID', 'Team Name', 'Group', ...Array.from({length: MAX_PLAYERS_PER_TEAM}, (_, i) => `Player ${i+1}`)];
   teamsSheet.appendRow(headers);
   teamsSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
 
   // Default Team Name is TBD. You can manually type over this in Google Sheets later!
   teams.forEach((team, i) => {
     const group = i < groupSplitIndex ? 'A' : 'B';
-    teamsSheet.appendRow([`Team ${i + 1}`, 'TBD', group, ...team]);
+    const paddedTeam = [...team];
+    while (paddedTeam.length < MAX_PLAYERS_PER_TEAM) paddedTeam.push('');
+    teamsSheet.appendRow([`Team ${i + 1}`, 'TBD', group, ...paddedTeam]);
   });
 
   SpreadsheetApp.getUi().alert(

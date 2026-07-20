@@ -52,6 +52,9 @@ function buildRoundRobinFixtures(teams, labelPrefix) {
       const home = rotation[i]
       const away = rotation[rotation.length - 1 - i]
 
+      // Drop matches against the Bye placeholder — there's no real match to show.
+      if (home.name === 'Bye' || away.name === 'Bye') continue
+
       matches.push({
         id: `${labelPrefix}-round-${roundIndex + 1}-match-${i + 1}`,
         home,
@@ -59,11 +62,13 @@ function buildRoundRobinFixtures(teams, labelPrefix) {
       })
     }
 
-    rounds.push({
-      id: `${labelPrefix}-${roundIndex + 1}`,
-      roundNumber: roundIndex + 1,
-      matches,
-    })
+    if (matches.length > 0) {
+      rounds.push({
+        id: `${labelPrefix}-${roundIndex + 1}`,
+        roundNumber: roundIndex + 1,
+        matches,
+      })
+    }
 
     const lastTeam = rotation.pop()
     rotation.splice(1, 0, lastTeam)
