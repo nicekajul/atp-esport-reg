@@ -18,9 +18,10 @@ const FORCED_TEAMMATES = [
   { members: ['Ayay!_NkaTug_ko!', 'FishTea'], teamSize: 3 },
 ];
 
-// A single registrant added as a 4th member to a normal (non-forced) random team, to
-// balance roster sizes against the forced-teammates team above. Never assigned to that team.
-const SUBSTITUTE_IGN = 'janajevb';
+// Registrants added as a 4th member to a normal (non-forced) random team, to balance
+// roster sizes against the forced-teammates team above. Each substitute lands on a
+// different normal team (never on a forced-teammates team).
+const SUBSTITUTE_IGNS = ['janajevb', 'Gab²'];
 
 // 1. Run this ONCE from the editor to create the sheet + headers.
 function setup() {
@@ -66,14 +67,16 @@ function generateTeams() {
   // members actually registered this time — a solo entrant just rejoins the pool.
   const remaining = [...players];
 
-  // Pull the designated substitute out of the pool too — they're added as a 4th
-  // member to a normal random team below, never to the forced-teammates team.
-  let substitute = null;
-  const subIdx = remaining.findIndex(p => p.toLowerCase() === SUBSTITUTE_IGN.trim().toLowerCase());
-  if (subIdx !== -1) {
-    substitute = remaining[subIdx];
-    remaining.splice(subIdx, 1);
-  }
+  // Pull the designated substitutes out of the pool too — they're added as a 4th
+  // member to normal random teams below, never to the forced-teammates team.
+  const substitutes = [];
+  SUBSTITUTE_IGNS.forEach(ign => {
+    const idx = remaining.findIndex(p => p.toLowerCase() === ign.trim().toLowerCase());
+    if (idx !== -1) {
+      substitutes.push(remaining[idx]);
+      remaining.splice(idx, 1);
+    }
+  });
 
   const lockedGroups = [];
 
@@ -104,16 +107,17 @@ function generateTeams() {
     teams.push(remaining.slice(i, i + PLAYERS_PER_TEAM));
   }
 
-  // Add the substitute as a 4th member of the first normal (non-forced) team, to
-  // balance rosters against the forced-teammates team's extra player.
-  if (substitute) {
-    const normalTeamsStart = lockedGroups.length;
-    if (teams.length > normalTeamsStart) {
-      teams[normalTeamsStart].push(substitute);
+  // Add each substitute as a 4th member of its own normal (non-forced) team, to
+  // balance rosters against the forced-teammates teams' extra players.
+  const normalTeamsStart = lockedGroups.length;
+  substitutes.forEach((substitute, i) => {
+    const targetIndex = normalTeamsStart + i;
+    if (teams.length > targetIndex) {
+      teams[targetIndex].push(substitute);
     } else {
       teams.push([substitute]);
     }
-  }
+  });
 
   // Pad any short team (including a locked group that ran out of free players) with blanks.
   teams.forEach(team => {
