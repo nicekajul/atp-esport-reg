@@ -171,7 +171,7 @@ function buildPlayoffMatches(groupASize, groupBSize, standingsA, standingsB, isC
   ]
 
   const totalRounds = 2
-  const roundLabels = ['Semifinals', 'Final']
+  const roundLabels = ['Semifinals', 'Final (Best of 3)']
   const matches = []
 
   for (let roundIndex = 0; roundIndex < totalRounds; roundIndex += 1) {
@@ -209,7 +209,7 @@ function buildPlayoffMatches(groupASize, groupBSize, standingsA, standingsB, isC
 
       matches.push({
         id: matchId,
-        name: `${label} ${matchIndex + 1}`,
+        name: currentRoundSize > 1 ? `${label} ${matchIndex + 1}` : label,
         nextMatchId,
         tournamentRoundText: `${roundIndex + 1}`,
         startTime: '',
@@ -602,7 +602,7 @@ export default function BracketPage() {
             <>
               <strong className="text-[var(--gold-soft)]">Crossover Playoffs:</strong> 1st place
               in a group faces 2nd place in the other group — the classic World Cup-style
-              crossover.
+              crossover. Semifinals are single matches; the Final is a Best of 3.
             </>,
             <>
               <strong className="text-[var(--gold-soft)]">Byes:</strong> If a group has fewer
